@@ -221,10 +221,20 @@ stages:
             AUTH="Authorization: Bearer $(GITHUB-SDK-MIRROR-TOKEN)"
 
             # Idempotent: an existing release is a no-op, so re-running a build never fails.
+            #
+            # "Already exists" is not on its own good enough to report success. A release created
+            # by a run that then failed its upload has no asset, and an early exit here would
+            # report green forever while nobody could download anything. So the existing release
+            # is checked for an attached asset too, and a bare one is a failure a human must
+            # resolve - re-uploading into someone else's release is not this step's business.
             CODE=$(curl -sS -o /tmp/existing.json -w '%{http_code}' -H "$AUTH" "$API/releases/tags/$TAG")
             if [ "$CODE" = "200" ]; then
-              echo "Release $TAG already exists - nothing to publish."
-              exit 0
+              if grep -q '"state": *"uploaded"' /tmp/existing.json; then
+                echo "Release $TAG already exists with an asset attached - nothing to publish."
+                exit 0
+              fi
+              echo "##vso[task.logissue type=error]Release $TAG exists but has no asset attached. A previous run created it and failed to upload. Delete the release (or attach the asset by hand) and re-run."
+              exit 1
             fi
             if [ "$CODE" != "404" ]; then
               echo "##vso[task.logissue type=error]HTTP $CODE checking whether $TAG exists. GitHub said:"
