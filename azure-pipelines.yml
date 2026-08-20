@@ -8,15 +8,15 @@
 # There is nothing to compile - the SDK is pure GDScript - so "it parses" is not a useful signal
 # on its own and the suite is the actual gate.
 
+# There is deliberately no paths: exclude here. Excluding README.md looks like an easy saving,
+# but the mirror-to-GitHub step in this pipeline IS how the public repo gets updated - so a
+# documentation-only change would never reach a single reader. Running the suite for a typo fix is
+# the cheaper mistake.
 trigger:
   branches:
     include:
       - master
       - development
-  paths:
-    exclude:
-      - README.md
-      - CHANGELOG.md
 
 pr:
   branches:
