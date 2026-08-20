@@ -1,0 +1,17 @@
+# Godot
+.godot/
+.import/
+export.cfg
+export_presets.cfg
+*.translation
+
+# Build output
+build/
+dist/
+*.zip
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

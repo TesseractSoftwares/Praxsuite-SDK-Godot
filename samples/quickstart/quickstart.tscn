@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bqp1rxsuitegdsq"]
+
+[ext_resource type="Script" path="res://samples/quickstart/quickstart.gd" id="1_quickstart"]
+
+[node name="Quickstart" type="Node"]
+script = ExtResource("1_quickstart")

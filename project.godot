@@ -1,0 +1,12 @@
+; Minimal host project so the addon can be built and tested headlessly.
+; Consumers copy addons/praxsuite/ into their own project instead.
+
+config_version=5
+
+[application]
+config/name="Praxsuite SDK"
+config/features=PackedStringArray("4.3", "GL Compatibility")
+run/main_scene=""
+
+[editor_plugins]
+enabled=PackedStringArray("res://addons/praxsuite/plugin.cfg")

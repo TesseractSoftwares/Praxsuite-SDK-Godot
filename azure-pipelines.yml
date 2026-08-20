@@ -1,0 +1,284 @@
+# Praxsuite SDK for Godot - validate, package, and mirror to GitHub
+#
+# PR and development: validate only.
+# master:             validate, zip the addon, mirror the source to the public GitHub repo, and
+#                     cut a GitHub Release carrying the zip.
+#
+# Validation runs the offline conformance suite and the secret-key gate in a real Godot, headless.
+# There is nothing to compile - the SDK is pure GDScript - so "it parses" is not a useful signal
+# on its own and the suite is the actual gate.
+
+trigger:
+  branches:
+    include:
+      - master
+      - development
+  paths:
+    exclude:
+      - README.md
+      - CHANGELOG.md
+
+pr:
+  branches:
+    include:
+      - master
+      - development
+
+pool:
+  name: tesseract-buildpool
+
+variables:
+  isMaster: $[eq(variables['Build.SourceBranch'], 'refs/heads/master')]
+  githubRepo: 'TesseractSoftwares/Praxsuite-SDK-Godot'
+  # The version the SDK is developed against. Consumers need only 4.2+, but the suite runs on one
+  # known engine build so a failure is never ambiguous about which.
+  godotVersion: '4.7.2'
+
+stages:
+
+# ─────────────────────────────────────────────────────────────────────────────
+- stage: Validate
+  displayName: 'Test'
+  jobs:
+    - job: Validate
+      steps:
+        # The URL is versioned deliberately. A "latest" download link turns an unrelated upstream
+        # release into a broken build here, and the asset names are not consistent enough across
+        # projects to guess at.
+        - script: |
+            set -e
+            ZIP="Godot_v$(godotVersion)-stable_linux.x86_64.zip"
+            URL="https://github.com/godotengine/godot/releases/download/$(godotVersion)-stable/$ZIP"
+
+            echo "Downloading $URL"
+            curl -fsSL "$URL" -o /tmp/godot.zip
+            unzip -oq /tmp/godot.zip -d /tmp/godot
+
+            BIN=$(find /tmp/godot -maxdepth 1 -type f -name 'Godot_v*' | head -1)
+            if [ -z "$BIN" ]; then
+              echo "##vso[task.logissue type=error]No Godot binary in $ZIP. Contents:"
+              ls -la /tmp/godot
+              exit 1
+            fi
+            chmod +x "$BIN"
+            echo "##vso[task.setvariable variable=godotBin]$BIN"
+            "$BIN" --version
+          displayName: 'Install Godot'
+
+        # Importing first means a parse error is reported as a parse error, rather than surfacing
+        # later as a confusing "class could not be resolved" from whichever file happened to load
+        # first.
+        - script: |
+            set -e
+            OUT=$("$(godotBin)" --headless --path . --import 2>&1) || true
+            echo "$OUT"
+            if echo "$OUT" | grep -qE 'SCRIPT ERROR|Parse Error|Failed to load script'; then
+              echo "##vso[task.logissue type=error]The addon does not import cleanly."
+              exit 1
+            fi
+            echo "Imported with no script errors."
+          displayName: 'Import project'
+
+        - script: |
+            set -e
+            "$(godotBin)" --headless --path . --script addons/praxsuite/tests/run_tests.gd
+          displayName: 'Run conformance suite'
+
+        # This repo is mirrored to a PUBLIC GitHub repo, so a key committed here reaches every
+        # consumer. The SDK ships the gate it asks users to run, and runs it on itself.
+        - script: |
+            set -e
+            "$(godotBin)" --headless --path . --script addons/praxsuite/tools/check_no_secrets.gd
+          displayName: 'Scan for leaked secret keys'
+
+        # The scan above only reads files Godot can see under res://. Documentation and pipeline
+        # files are just as public, so they get their own pass.
+        - script: |
+            set -e
+            if grep -rEn 'sk_live_[A-Za-z0-9]{16,}' \
+                 --include='*.md' --include='*.yml' --include='*.cfg' --include='*.godot' \
+                 --exclude-dir=.git . ; then
+              echo "##vso[task.logissue type=error]A Praxsuite secret key is present. Revoke it now - this repo is mirrored publicly."
+              exit 1
+            fi
+            echo "No secret keys in docs or pipeline files."
+          displayName: 'Scan docs and pipeline files'
+
+# ─────────────────────────────────────────────────────────────────────────────
+- stage: Publish
+  displayName: 'Package and mirror to GitHub'
+  dependsOn: Validate
+  condition: and(succeeded(), eq(variables.isMaster, true))
+  jobs:
+    - job: Publish
+      steps:
+        # Full history: the mirror push needs real commits, not a shallow clone.
+        - checkout: self
+          fetchDepth: 0
+          persistCredentials: true
+
+        - task: AzureKeyVault@2
+          displayName: 'Read GitHub token'
+          inputs:
+            azureSubscription: 'sc-acr-push-core-prod'
+            KeyVaultName: 'prax-cicd-kv'
+            SecretsFilter: 'GITHUB-SDK-MIRROR-TOKEN'
+            RunAsPreJob: false
+
+        # plugin.cfg is the single source of truth for the version, so a release tag can never
+        # disagree with what the editor shows the user.
+        - script: |
+            set -e
+            VERSION=$(grep -m1 '^version=' addons/praxsuite/plugin.cfg | cut -d'"' -f2)
+            if [ -z "$VERSION" ]; then
+              echo "##vso[task.logissue type=error]No version= line in addons/praxsuite/plugin.cfg."
+              exit 1
+            fi
+            echo "Addon version: $VERSION"
+            echo "##vso[task.setvariable variable=pkgVersion]$VERSION"
+          displayName: 'Read addon version'
+
+        # The zip contains addons/praxsuite/ so it unpacks straight into a consumer's project.
+        # Tests and the host project are excluded: nobody consuming the SDK needs them, and
+        # shipping the test fixtures would put key-shaped strings in everyone's project.
+        - script: |
+            set -e
+            OUT="$(Build.ArtifactStagingDirectory)/package"
+            mkdir -p "$OUT"
+            PKG="$OUT/praxsuite-godot-$(pkgVersion).zip"
+
+            # Stage a copy with the exclusions already applied, so the archiver needs no exclude
+            # flags and both branches below are a single line. An earlier version inlined a
+            # multi-line python script here, whose column-0 lines broke the YAML block scalar.
+            STAGE=$(mktemp -d)
+            mkdir -p "$STAGE/addons"
+            cp -r addons/praxsuite "$STAGE/addons/praxsuite"
+            rm -rf "$STAGE/addons/praxsuite/tests" "$STAGE/addons/praxsuite/.godot"
+
+            # zip is a separate package and not guaranteed on an agent image; python3 -m zipfile
+            # is stdlib. Either produces the same archive from the staged tree.
+            if command -v zip >/dev/null 2>&1; then
+              ( cd "$STAGE" && zip -rq "$PKG" addons )
+            elif command -v python3 >/dev/null 2>&1; then
+              ( cd "$STAGE" && python3 -m zipfile -c "$PKG" addons )
+            else
+              echo "##vso[task.logissue type=error]Neither zip nor python3 is available to package the addon."
+              exit 1
+            fi
+            rm -rf "$STAGE"
+
+            unzip -l "$PKG"
+            if unzip -l "$PKG" | grep -q 'tests/'; then
+              echo "##vso[task.logissue type=error]The package contains the test suite."
+              exit 1
+            fi
+            echo "##vso[task.setvariable variable=pkgPath]$PKG"
+          displayName: 'Package addon'
+
+        - task: PublishBuildArtifacts@1
+          displayName: 'Publish package artifact'
+          inputs:
+            PathtoPublish: '$(Build.ArtifactStagingDirectory)/package'
+            ArtifactName: 'godot-addon'
+
+        - script: |
+            set -e
+            git config user.email "ci@tesseractsoftwares.com"
+            git config user.name  "Tesseract CI"
+
+            git remote remove github 2>/dev/null || true
+            git remote add github "https://x-access-token:$(GITHUB-SDK-MIRROR-TOKEN)@github.com/$(githubRepo).git"
+
+            # Read the mirror's head BEFORE fetching. --force-with-lease cannot protect anything
+            # if a fetch runs first: fetching sets the remote-tracking ref to whatever GitHub
+            # currently has, so the lease always matches and the push always wins. That is not
+            # hypothetical - it silently reset commits pushed directly to a sibling SDK's mirror.
+            REMOTE_SHA=$(git ls-remote github refs/heads/master | cut -f1)
+            if [ -n "$REMOTE_SHA" ]; then
+              git fetch github master
+              if ! git merge-base --is-ancestor "$REMOTE_SHA" HEAD; then
+                echo "##vso[task.logissue type=error]github.com/$(githubRepo) is at $REMOTE_SHA, which is not an ancestor of this build. Someone pushed to the mirror directly. Reconcile it - do not overwrite."
+                exit 1
+              fi
+            fi
+
+            echo "Mirroring master to github.com/$(githubRepo)"
+            if ! git push github HEAD:refs/heads/master; then
+              echo "##vso[task.logissue type=error]Mirror push failed. Check the token has contents:write on the mirror."
+              exit 1
+            fi
+            echo "Mirror complete."
+          displayName: 'Mirror source to GitHub'
+
+        # Every call captures the HTTP status and prints GitHub's response when it is not what we
+        # expect. curl -f is deliberately absent: it exits 22 with no message and no body, which
+        # cost three builds on a sibling SDK failing with an empty log while GitHub was willing to
+        # say plainly what was wrong. A publish step that cannot explain its own failure is not
+        # finished.
+        - script: |
+            TAG="v$(pkgVersion)"
+            API="https://api.github.com/repos/$(githubRepo)"
+            AUTH="Authorization: Bearer $(GITHUB-SDK-MIRROR-TOKEN)"
+
+            # Idempotent: an existing release is a no-op, so re-running a build never fails.
+            CODE=$(curl -sS -o /tmp/existing.json -w '%{http_code}' -H "$AUTH" "$API/releases/tags/$TAG")
+            if [ "$CODE" = "200" ]; then
+              echo "Release $TAG already exists - nothing to publish."
+              exit 0
+            fi
+            if [ "$CODE" != "404" ]; then
+              echo "##vso[task.logissue type=error]HTTP $CODE checking whether $TAG exists. GitHub said:"
+              cat /tmp/existing.json; echo
+              exit 1
+            fi
+
+            # No double quotes and no newlines in the notes: escaped quotes here become real
+            # quotes once the shell expands them, and the body stops being valid JSON.
+            NOTES="Copy addons/praxsuite into your project and enable the plugin. Godot 4.2+, any build. See CHANGELOG.md for what changed."
+            CODE=$(curl -sS -o /tmp/release.json -w '%{http_code}' -X POST \
+              -H "$AUTH" -H "Content-Type: application/json" -H "Accept: application/vnd.github+json" \
+              "$API/releases" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"Praxsuite SDK for Godot $(pkgVersion)\",\"body\":\"$NOTES\",\"draft\":false,\"prerelease\":false}")
+            if [ "$CODE" != "201" ]; then
+              echo "##vso[task.logissue type=error]GitHub refused to create release $TAG (HTTP $CODE). It said:"
+              cat /tmp/release.json; echo
+              exit 1
+            fi
+
+            RELEASE_ID=$(grep -o '"id": *[0-9]*' /tmp/release.json | head -1 | tr -dc '0-9')
+            if [ -z "$RELEASE_ID" ]; then
+              echo "##vso[task.logissue type=error]Release $TAG was created but its id could not be read from:"
+              cat /tmp/release.json; echo
+              exit 1
+            fi
+            echo "Created release $TAG (id $RELEASE_ID)"
+
+            if [ ! -f "$(pkgPath)" ]; then
+              echo "##vso[task.logissue type=error]The package is missing at $(pkgPath)."
+              exit 1
+            fi
+
+            # The asset name is expanded by the shell, not by ADO. $(basename ...) here would be
+            # read as an ADO variable, pass through as literal text, and produce a release with no
+            # asset while the build stayed green.
+            PKG="$(pkgPath)"
+            CODE=$(curl -sS -o /tmp/asset.json -w '%{http_code}' -X POST \
+              -H "$AUTH" -H "Content-Type: application/zip" \
+              --data-binary @"$PKG" \
+              "https://uploads.github.com/repos/$(githubRepo)/releases/$RELEASE_ID/assets?name=${PKG##*/}")
+            if [ "$CODE" != "201" ]; then
+              echo "##vso[task.logissue type=error]The asset upload returned HTTP $CODE. GitHub said:"
+              cat /tmp/asset.json; echo
+              exit 1
+            fi
+
+            # Verify rather than trust. A release that exists with nothing attached is worse than
+            # a failed build, because the pipeline reports success and nobody looks again.
+            ATTACHED=$(curl -sS -H "$AUTH" "$API/releases/tags/$TAG" | grep -c '"state": *"uploaded"')
+            if [ "$ATTACHED" -lt 1 ]; then
+              echo "##vso[task.logissue type=error]Release $TAG has no uploaded asset after the upload reported 201."
+              exit 1
+            fi
+
+            echo "Published release $TAG with $ATTACHED asset(s)"
+          displayName: 'Cut GitHub release'
