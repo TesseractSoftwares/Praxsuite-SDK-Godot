@@ -1,0 +1,5 @@
+# GDScript, scenes and the pipeline are all read by tools that expect LF. Being explicit here
+# avoids a Windows clone committing CRLF back.
+* text=auto eol=lf
+*.png binary
+*.zip binary
