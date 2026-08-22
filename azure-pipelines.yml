@@ -175,6 +175,20 @@ stages:
             echo "##vso[task.setvariable variable=pkgPath]$PKG"
           displayName: 'Package addon'
 
+        # An artifact that exists is not an artifact that works. The TypeScript SDK published a
+        # 7 KB tarball containing no code, and every gate in that pipeline passed because each one
+        # checked for the artifact's presence and its "uploaded" state - never its contents.
+        - script: |
+            set -e
+            GD=$(unzip -l "$(pkgPath)" | grep -c '\.gd$' || true)
+            echo "Archive carries $GD GDScript files."
+            if [ "$GD" -lt 15 ]; then
+              echo "##vso[task.logissue type=error]The addon archive does not contain the SDK. Contents:"
+              unzip -l "$(pkgPath)"
+              exit 1
+            fi
+          displayName: 'Verify the addon carries the SDK'
+
         - task: PublishBuildArtifacts@1
           displayName: 'Publish package artifact'
           inputs:
