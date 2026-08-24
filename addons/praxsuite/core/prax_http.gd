@@ -26,7 +26,7 @@ func _init(host: Node, timeout_seconds: float = 20.0) -> void:
 ##
 ## `retry_safe` must only be true for operations that can be repeated without changing state.
 func request_json(method: int, url: String, headers: Dictionary, body: Variant = null,
-		retry_safe: bool = false) -> Variant:
+		retry_safe: bool = false, timeout_override: float = -1.0) -> Variant:
 	var attempts := MAX_ATTEMPTS if retry_safe else 1
 	var last_error: PraxError = null
 
@@ -37,7 +37,7 @@ func request_json(method: int, url: String, headers: Dictionary, body: Variant =
 			PraxLog.verbose("Retrying in %.1fs (attempt %d of %d)" % [delay, attempt + 1, attempts])
 			await _host.get_tree().create_timer(delay).timeout
 
-		var outcome: Variant = await _send_once(method, url, headers, body)
+		var outcome: Variant = await _send_once(method, url, headers, body, timeout_override)
 		if not (outcome is PraxError):
 			return outcome
 
@@ -48,13 +48,16 @@ func request_json(method: int, url: String, headers: Dictionary, body: Variant =
 	return last_error
 
 
-func _send_once(method: int, url: String, headers: Dictionary, body: Variant) -> Variant:
+func _send_once(method: int, url: String, headers: Dictionary, body: Variant,
+		timeout_override: float = -1.0) -> Variant:
 	if _host == null or not is_instance_valid(_host):
 		return PraxError.new("CLIENT_DISPOSED",
 			"The Praxsuite client node was freed before this request finished.")
 
 	var http := HTTPRequest.new()
-	http.timeout = _timeout_seconds
+	# A Sync endpoint holds the connection while its automation runs, so a caller can ask for
+	# longer than the client default rather than abandoning work the server is still doing.
+	http.timeout = timeout_override if timeout_override > 0.0 else _timeout_seconds
 	# The gateway always answers JSON, and decompressing it ourselves buys nothing.
 	http.accept_gzip = true
 	_host.add_child(http)

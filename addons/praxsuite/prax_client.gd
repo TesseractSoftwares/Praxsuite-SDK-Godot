@@ -122,7 +122,8 @@ func session_headers() -> Dictionary:
 ##
 ## A 401 on a signed-in request is retried once after a refresh: an access token can expire
 ## between the check and the server reading it.
-func send(method: int, url: String, body: Variant = null, retry_safe: bool = false) -> Variant:
+func send(method: int, url: String, body: Variant = null, retry_safe: bool = false,
+		timeout_override: float = -1.0) -> Variant:
 	if not _configured:
 		return PraxError.new("NOT_CONFIGURED",
 			"Call Prax.configure(workspace_id, publishable_key) before using the SDK.")
@@ -134,7 +135,7 @@ func send(method: int, url: String, body: Variant = null, retry_safe: bool = fal
 		if refreshed is PraxError and not auth.is_signed_in:
 			return refreshed
 
-	var response: Variant = await http.request_json(method, url, session_headers(), body, retry_safe)
+	var response: Variant = await http.request_json(method, url, session_headers(), body, retry_safe, timeout_override)
 
 	if response is PraxError and response.is_auth_failure and auth != null and auth.is_signed_in \
 			and not _retried_after_refresh:
@@ -142,7 +143,7 @@ func send(method: int, url: String, body: Variant = null, retry_safe: bool = fal
 		var again: Variant = await auth._refresh_now()
 		_retried_after_refresh = false
 		if not (again is PraxError):
-			return await http.request_json(method, url, session_headers(), body, retry_safe)
+			return await http.request_json(method, url, session_headers(), body, retry_safe, timeout_override)
 
 	return response
 

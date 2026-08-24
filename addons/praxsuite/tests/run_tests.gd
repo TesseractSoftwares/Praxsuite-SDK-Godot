@@ -39,6 +39,7 @@ func _init() -> void:
 	_test_query_building()
 	await _test_write_guardrails()
 	_test_secret_scan()
+	_test_endpoints()
 
 	print("\n%d passed, %d failed\n" % [_passed, _failed])
 	quit(1 if _failed > 0 else 0)
@@ -296,3 +297,24 @@ secret scan")
 	# which is why those fakes are assembled from fragments at runtime.
 	var offenders := PraxSecretScan.scan_directory("res://addons/praxsuite/")
 	_check("the SDK source carries no secret key", offenders.is_empty(), str(offenders))
+
+
+func _test_endpoints() -> void:
+	print("
+endpoints (measured against a live gateway)")
+
+	var endpoints := PraxEndpoints.new(null)
+
+	# GET never reaches the automation - the gateway consumes it as a Meta webhook verification
+	# handshake and answers 400. Offering a GET helper would be offering a call that cannot work.
+	_check("no GET helper is exposed", not endpoints.has_method("get_endpoint"))
+
+	# A Sync endpoint holds the connection while its automation runs. syncTimeoutSeconds values of
+	# 30, 45, 60 and 90 were all observed in one workspace; the client default is 20s.
+	_check("endpoint timeout clears the observed maximum",
+		PraxEndpoints.DEFAULT_ENDPOINT_TIMEOUT >= 90.0)
+
+	# A blank id must be refused before any request is built.
+	var refused: Variant = await endpoints.call_endpoint("  ")
+	_check("a blank endpoint id is refused",
+		refused is PraxError and refused.code == "INVALID_REQUEST")
