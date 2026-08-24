@@ -3,7 +3,7 @@
 Backend for your Godot game: player accounts, saves, leaderboards, inventories, and
 server-authoritative logic. Pure GDScript, no dependencies, no build step.
 
-Works in **any** Godot 4.2+ build — including the standard (non-.NET) one that most people use.
+Works in **any** Godot 4.3+ build — including the standard (non-.NET) one that most people use.
 If you write C# in Godot you can use the [.NET SDK](https://github.com/TesseractSoftwares/Praxsuite-SDK-DotNet)
 instead; this one is for GDScript.
 
@@ -234,7 +234,15 @@ to send a player back to your title screen rather than discovering the expiry on
 
 ## Requirements
 
-Godot **4.2 or newer**, any build. Developed and tested against 4.7.2.
+Godot **4.3 or newer**, any build.
+
+That floor is measured, not guessed. CI imports the project and runs the full suite on three engine
+builds every commit — 4.3, and 4.7.2 which development happens against, and it used to claim 4.2.
+**4.2.2 fails**: its parser doesn't resolve global class names and the `Prax` autoload on a first
+import, so `plugin.gd` and every sample fail to load. 4.3 introduced the resolution pass that makes
+it work, and there's no workaround worth carrying for an engine build from 2023.
+
+If you're on 4.2, the fix is upgrading Godot.
 
 ## Licence
 

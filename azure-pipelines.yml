@@ -41,22 +41,20 @@ stages:
   displayName: 'Test'
   jobs:
     - job: Validate
-      # A matrix over engine versions, because the README claims the addon works on "4.2 or newer"
-      # and until now nothing tested that. One version was tested (4.7.2) and a floor was asserted -
-      # which is precisely the shape of claim this portfolio has been burned by before.
+      # A matrix over engine versions, because the README used to claim "4.2 or newer" while CI
+      # tested exactly one build. That claim turned out to be FALSE - measured here, run 2234:
+      # 4.2.2 cannot resolve global class names or the Prax autoload on a first import, so plugin.gd
+      # and every sample fail to load. 4.3 introduced the resolution pass that makes it work.
       #
       # The floor matters commercially, not just pedantically: the Godot Asset Library takes one
-      # listing per engine version and rejects an asset that does not work in the version stated, so
-      # "4.2+" is either something we can defend or something that gets the listing pulled.
+      # listing per engine version and rejects an asset that does not work in the version stated.
       #
-      # 4.2 is the claim, 4.3 is what project.godot declares in config/features, and 4.7.2 is what
-      # development happens against. If 4.2 fails, the honest fix is to raise the README's floor to
-      # whatever passes - not to quietly drop the test.
+      # So the matrix is now the floor we actually support and the version we develop on. Testing
+      # the floor every commit is the point - it is the claim most likely to rot silently, because
+      # nobody develops against it.
       strategy:
         matrix:
-          floor_4_2:
-            engineVersion: '4.2.2'
-          declared_4_3:
+          floor_4_3:
             engineVersion: '4.3'
           current:
             engineVersion: '4.7.2'
@@ -277,7 +275,7 @@ stages:
 
             # No double quotes and no newlines in the notes: escaped quotes here become real
             # quotes once the shell expands them, and the body stops being valid JSON.
-            NOTES="Copy addons/praxsuite into your project and enable the plugin. Godot 4.2+, any build. See CHANGELOG.md for what changed."
+            NOTES="Copy addons/praxsuite into your project and enable the plugin. Godot 4.3+, any build. See CHANGELOG.md for what changed."
             CODE=$(curl -sS -o /tmp/release.json -w '%{http_code}' -X POST \
               -H "$AUTH" -H "Content-Type: application/json" -H "Accept: application/vnd.github+json" \
               "$API/releases" \

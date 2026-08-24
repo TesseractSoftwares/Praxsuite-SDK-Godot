@@ -4,7 +4,7 @@ All notable changes to the Praxsuite SDK for Godot.
 
 ## [1.0.0] - 2026-08-20
 
-First release. Pure GDScript, no dependencies, Godot 4.2+ including non-.NET builds.
+First release. Pure GDScript, no dependencies, Godot 4.3+ including non-.NET builds.
 
 ### Added
 

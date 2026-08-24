@@ -1,7 +1,7 @@
 # Praxsuite SDK for Godot
 
 Backend for your Godot game — player accounts, saves, leaderboards, inventories and
-server-authoritative logic. Pure GDScript, zero dependencies, Godot 4.2+.
+server-authoritative logic. Pure GDScript, zero dependencies, Godot 4.3+.
 
 Enabling the plugin registers a `Prax` autoload, which is how you reach the SDK from anywhere.
 
