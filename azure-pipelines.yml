@@ -30,9 +30,9 @@ pool:
 variables:
   isMaster: $[eq(variables['Build.SourceBranch'], 'refs/heads/master')]
   githubRepo: 'TesseractSoftwares/Praxsuite-SDK-Godot'
-  # The version the SDK is developed against. Consumers need only 4.2+, but the suite runs on one
-  # known engine build so a failure is never ambiguous about which.
-  godotVersion: '4.7.2'
+  # No godotVersion here any more: the engine versions live in the Validate matrix, and the Publish
+  # stage never needed an engine at all - packaging is a staged copy and a zip, because a pure
+  # GDScript addon has nothing to compile.
 
 stages:
 
@@ -41,14 +41,33 @@ stages:
   displayName: 'Test'
   jobs:
     - job: Validate
+      # A matrix over engine versions, because the README claims the addon works on "4.2 or newer"
+      # and until now nothing tested that. One version was tested (4.7.2) and a floor was asserted -
+      # which is precisely the shape of claim this portfolio has been burned by before.
+      #
+      # The floor matters commercially, not just pedantically: the Godot Asset Library takes one
+      # listing per engine version and rejects an asset that does not work in the version stated, so
+      # "4.2+" is either something we can defend or something that gets the listing pulled.
+      #
+      # 4.2 is the claim, 4.3 is what project.godot declares in config/features, and 4.7.2 is what
+      # development happens against. If 4.2 fails, the honest fix is to raise the README's floor to
+      # whatever passes - not to quietly drop the test.
+      strategy:
+        matrix:
+          floor_4_2:
+            engineVersion: '4.2.2'
+          declared_4_3:
+            engineVersion: '4.3'
+          current:
+            engineVersion: '4.7.2'
       steps:
         # The URL is versioned deliberately. A "latest" download link turns an unrelated upstream
         # release into a broken build here, and the asset names are not consistent enough across
         # projects to guess at.
         - script: |
             set -e
-            ZIP="Godot_v$(godotVersion)-stable_linux.x86_64.zip"
-            URL="https://github.com/godotengine/godot/releases/download/$(godotVersion)-stable/$ZIP"
+            ZIP="Godot_v$(engineVersion)-stable_linux.x86_64.zip"
+            URL="https://github.com/godotengine/godot/releases/download/$(engineVersion)-stable/$ZIP"
 
             echo "Downloading $URL"
             curl -fsSL "$URL" -o /tmp/godot.zip
