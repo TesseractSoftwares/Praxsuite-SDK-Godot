@@ -182,7 +182,7 @@ func _test_credentials() -> void:
 func _test_routes() -> void:
 	print("\nroutes")
 
-	var ws := "1eb92f32-d628-4656-8c64-cd0d43c9869d"
+	var ws := "00000000-0000-4000-8000-0000000000ff"
 	_eq("query uses the FrontDoor short form",
 		PraxRoutes.query("https://gateway.praxsuite.com", ws),
 		"https://gateway.praxsuite.com/%s/query" % ws)
