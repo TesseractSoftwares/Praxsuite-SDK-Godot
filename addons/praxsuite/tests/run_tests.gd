@@ -40,6 +40,7 @@ func _init() -> void:
 	await _test_write_guardrails()
 	_test_secret_scan()
 	_test_endpoints()
+	_test_event_bus()
 
 	print("\n%d passed, %d failed\n" % [_passed, _failed])
 	quit(1 if _failed > 0 else 0)
@@ -318,3 +319,104 @@ endpoints (measured against a live gateway)")
 	var refused: Variant = await endpoints.call_endpoint("  ")
 	_check("a blank endpoint id is refused",
 		refused is PraxError and refused.code == "INVALID_REQUEST")
+
+
+func _test_event_bus() -> void:
+	print("\nevent bus (measured against a live hub, 2026-09-07)")
+
+	# The server folds only the TOPIC segment. Folding the whole key would merge office:HQ and
+	# office:hq, which are two different buses; folding neither lets two clients resolve the same
+	# topic, both be admitted, and silently never see each other.
+	_eq("the topic folds and the instance does not",
+		PraxBusWire.normalize_bus_key("Office:HQ"), "office:HQ")
+	_eq("a key with no instance still folds", PraxBusWire.normalize_bus_key("LOBBY"), "lobby")
+	_eq("whitespace is trimmed", PraxBusWire.normalize_bus_key("  office:hq  "), "office:hq")
+	_eq("user:self passes through", PraxBusWire.normalize_bus_key("user:self"), "user:self")
+
+	_check("an empty key is refused before the round trip",
+		PraxBusWire.check_bus_key("   ") != null)
+	_check("a key containing ws: is refused",
+		PraxBusWire.check_bus_key("x:ws:something") != null)
+	_check("a valid key passes", PraxBusWire.check_bus_key("office:hq") == null)
+
+	# SignalR compares the handshake literally: a space after a colon fails it.
+	_eq("the handshake is byte-exact",
+		PraxBusWire.HANDSHAKE_FRAME, '{"protocol":"json","version":1}')
+
+	# One physical message can carry several frames, and a transport may split one across two
+	# reads. Parsing the whole buffer breaks under exactly the load the bus exists for.
+	var rs := "\u001e"
+	var one := PraxBusWire.split_frames('{"type":6}' + rs)
+	_check("a single frame splits to one message",
+		one["frames"].size() == 1 and one["remainder"] == "")
+
+	var two := PraxBusWire.split_frames(
+		'{"type":6}' + rs + '{"type":3,"invocationId":"1","result":null}' + rs)
+	_check("two coalesced frames split into two", two["frames"].size() == 2)
+
+	var partial := PraxBusWire.split_frames('{"type":6}' + rs + '{"type":3,"invoca')
+	_check("a trailing partial frame is buffered, not parsed",
+		partial["frames"].size() == 1 and partial["remainder"] == '{"type":3,"invoca')
+
+	var empty_segment := PraxBusWire.split_frames(rs + '{"type":6}' + rs)
+	_check("an empty segment is dropped", empty_segment["frames"].size() == 1)
+
+	# invocationId is a STRING: SignalR matches completions on it by value.
+	var join_frame: Dictionary = JSON.parse_string(
+		PraxBusWire.build_invocation("1", "JoinBus", ["office:hq", null]))
+	_eq("join targets JoinBus", join_frame["target"], "JoinBus")
+	_eq("join sends an explicit null ticket", join_frame["arguments"], ["office:hq", null])
+	_check("the invocation id is a string", join_frame["invocationId"] is String)
+
+	# A REJECTION arrives inside a SUCCESSFUL completion. Code that only inspects SignalR's own
+	# error field reports every denied join as a success.
+	var denied := PraxBusWire.parse_bus_result(JSON.parse_string(
+		'{"type":3,"invocationId":"3","result":{"ok":false,"error":"unknown_topic","peers":[]}}'))
+	_check("a rejection is ok:false, not an error frame",
+		denied["ok"] == false and denied["error"] == "unknown_topic"
+			and denied["is_transport_error"] == false)
+
+	var joined := PraxBusWire.parse_bus_result(JSON.parse_string(
+		'{"type":3,"invocationId":"1","result":{"ok":true,"error":null,"peers":' +
+		'[{"userId":"u1","event":"move","payload":{"x":1}}]}}'))
+	_check("a join carries every peer's retained state",
+		joined["ok"] and joined["peers"].size() == 1
+			and joined["peers"][0]["event"] == "move")
+
+	# Zero recipients means it went out and nobody was joined. Treating it as a failure makes
+	# every empty room look broken.
+	var published := PraxBusWire.parse_bus_result(JSON.parse_string(
+		'{"type":3,"invocationId":"2","result":{"ok":true,"error":null,"recipients":0}}'))
+	_check("zero recipients is success", published["ok"] and published["recipients"] == 0)
+
+	# Godot parses every JSON number as a float, so a count arrives as 1.0 unless it is coerced.
+	var counted := PraxBusWire.parse_bus_result(JSON.parse_string(
+		'{"type":3,"invocationId":"2","result":{"ok":true,"recipients":3}}'))
+	_check("the recipient count is an int, not a float",
+		typeof(counted["recipients"]) == TYPE_INT and counted["recipients"] == 3)
+
+	# LeaveBus is void: its result is literally null.
+	var void_result := PraxBusWire.parse_bus_result(JSON.parse_string(
+		'{"type":3,"invocationId":"7","result":null}'))
+	_check("a void result is ok", void_result["ok"] and void_result["peers"].size() == 0)
+
+	var hub_error := PraxBusWire.parse_bus_result(JSON.parse_string(
+		'{"type":3,"invocationId":"9","error":"An unexpected error occurred."}'))
+	_check("a hub fault is kept apart from a policy rejection",
+		hub_error["ok"] == false and hub_error["is_transport_error"])
+
+	# The workspace comes from the token; adding a segment to this path 404s.
+	_eq("the hub has no workspace segment",
+		PraxBusWire.negotiate_url("https://gw.test"),
+		"https://gw.test/hubs/event-bus/negotiate?negotiateVersion=1")
+	_eq("the socket url upgrades the scheme and carries the token",
+		PraxBusWire.socket_url("https://gw.test", "abc"),
+		"wss://gw.test/hubs/event-bus?access_token=abc")
+	_check("a plaintext base url gives a plaintext socket url",
+		PraxBusWire.socket_url("http://localhost:5000", "t").begins_with("ws://"))
+
+	for code in ["invalid_bus_key", "unknown_topic", "denied", "invalid_ticket",
+			"bus_full_or_too_many_buses", "not_a_member", "invalid_event_name",
+			"payload_too_large", "rate_limited"]:
+		_check("%s has a sentence worth reading" % code,
+			PraxBusWire.describe_error(code).length() > 20)

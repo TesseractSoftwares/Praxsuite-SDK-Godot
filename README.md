@@ -218,6 +218,102 @@ godot --headless --path . --script addons/praxsuite/tests/run_tests.gd
 
 ---
 
+## The Event Bus
+
+Ephemeral realtime between connected players: avatars, cursors, "is typing", a lobby. State
+that is *changing*, where losing a message is fine because a newer one is 100ms behind it.
+
+```gdscript
+await Prax.auth.login(email, password)      # the bus needs a signed-in player, not the key
+
+var room := Prax.bus.topic("office").channel("hq")     # the bus "office:hq"
+
+room.event_received.connect(func(name, payload, from_id): _move_avatar(from_id, payload))
+room.peer_left.connect(_remove_avatar)
+
+# join() returns everyone already in the room, so a player who arrives late sees the
+# world rather than an empty one until somebody happens to move.
+for peer in await room.join():
+    _move_avatar(peer["user_id"], peer["payload"])
+
+await room.publish("move", {"x": x, "y": y})
+```
+
+**A topic must exist before anyone can join it.** Declare it once in the portal under
+API Gateway / Event Bus and pick its access rule: open to any signed-in player, gated on a role
+from their token, or gated on a grant on that one bus instance. An undeclared topic is refused -
+which is what stops another game's client squatting in your namespace.
+
+`Prax.bus.self_channel()` is the player's own bus, `user:self`. The server resolves it to their
+id, so it can never address anybody else.
+
+Publish **decisions, not frames**. One message per movement decision (`from`, `to`) rather than
+one per rendered frame: a two-second walk becomes one message instead of a hundred, and the
+receiving client interpolates. The rate limit is priced by RECIPIENTS, so a busy room exhausts
+it far faster than an empty one.
+
+Three things about it are not obvious and will bite:
+
+- **Nothing is persisted.** No history, no retry, no delivery to a player who was not connected.
+  The test is one question: *if this is lost, does it matter?* Yes - a purchase, a score, an
+  inventory grant - means a table or an automation, and a server-authoritative one at that. No,
+  because a newer one is coming, means the bus.
+- **Payloads are hostile.** The bus relays opaque JSON between *players* and parses none of it,
+  so every server-side check is bypassed. A position is a hint, never an authority.
+- **You never receive your own event.** Apply your own change locally.
+
+`publish()` does not report a refusal as an error - a game loop that treats a rate limit as a
+failure is worse than one that skips a frame. Read the result when you care:
+
+```gdscript
+var r = await room.publish("move", {"x": x, "y": y})
+if not r["ok"]:
+    print(r["error"])        # e.g. "rate_limited"
+if r["recipients"] == 0:
+    pass                     # it went out, and nobody was joined
+```
+
+`join()` is the opposite and returns a `PraxError` worth checking: a publish that does not land
+is one lost frame, a join that does not land leaves this player silently absent for the session.
+
+Reconnects are handled. The socket comes back with backoff and every channel you still want is
+re-joined, because SignalR group membership does not survive a reconnect - a client that only
+reconnects is connected, in no groups, and looks for all the world like a broken server.
+
+The SDK speaks SignalR's JSON hub protocol directly over Godot's own `WebSocketPeer`. There is
+no SignalR client for Godot, the surface is four message types wide, and this add-on has no
+dependencies.
+
+---
+
+## Signing in with an external provider
+
+```gdscript
+for provider in await Prax.auth.providers():
+    _add_button(provider["slug"], provider["display_name"])
+
+var start = await Prax.auth.start_oidc_login("tesseract")
+OS.shell_open(start["authorization_url"])      # keep start["state"]
+
+# ...once the provider has redirected back with code and state:
+await Prax.auth.complete_oidc_login(
+    "tesseract", code, state,
+    "https://app.example/callback")   # byte-identical to the configured redirect URI
+```
+
+All four arguments are required, and three of them are why an external sign-in fails when it
+fails: the gateway scopes its one-time `state` per provider, consumes it once, and compares the
+redirect URI against the value configured for that provider. Pass the URI you were actually
+redirected to rather than rebuilding it.
+
+The session lands in the same place a password login puts it, so refresh, sign-out and every
+authenticated call behave identically afterwards.
+
+Only the authorization-code flow exists - there is no route that accepts a provider's own
+id_token - so even a native button has to make this browser hop.
+
+---
+
 ## API surface
 
 | | |

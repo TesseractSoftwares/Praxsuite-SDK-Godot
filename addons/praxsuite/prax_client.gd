@@ -27,7 +27,7 @@
 class_name PraxsuiteClient
 extends Node
 
-const SDK_VERSION := "1.0.0"
+const SDK_VERSION := "1.1.0"
 
 signal configured()
 
@@ -38,6 +38,11 @@ var auth: PraxAuth = null
 var data: PraxData = null
 var schema: PraxSchema = null
 var endpoints: PraxEndpoints = null
+
+## The Event Bus: ephemeral realtime between connected players - avatars, cursors, typing
+## indicators, lobby state. Nothing is persisted, and it needs a signed-in player rather than
+## the workspace key.
+var bus: PraxBus = null
 var http: PraxHttp = null
 
 var _credential: String = ""
@@ -85,6 +90,10 @@ func configure(p_workspace_id: String, credential: String,
 	data = PraxData.new(self)
 	schema = PraxSchema.new(self)
 	endpoints = PraxEndpoints.new(self)
+	bus = PraxBus.new(self)
+	# A Node, because WebSocketPeer only advances while something polls it, and _process is the
+	# only thing that reliably does. Parented here so it lives exactly as long as the client.
+	add_child(bus)
 
 	_configured = true
 	PraxLog.info("Configured for workspace %s at %s (SDK %s)" % [workspace_id, base_url, SDK_VERSION])
