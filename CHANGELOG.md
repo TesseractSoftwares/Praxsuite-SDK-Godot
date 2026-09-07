@@ -2,6 +2,25 @@
 
 All notable changes to the Praxsuite SDK for Godot.
 
+## [1.1.0] - 2026-09-07
+
+### Added
+
+- **`Prax.bus` - the Event Bus.** Ephemeral realtime between connected players.
+  `Prax.bus.topic("office").channel("hq")` gives a channel with `join`, `publish`, `leave`
+  and the `event_received`, `peer_joined`, `peer_left` and `evicted` signals, plus the
+  player's own `Prax.bus.self_channel()`. Reconnects with backoff and re-joins every channel,
+  because SignalR group membership does not survive a reconnect and a client that only
+  reconnects is connected, in no groups, and silent.
+
+  It speaks SignalR's JSON hub protocol directly over `WebSocketPeer`: there is no SignalR
+  client for Godot, the surface is four message types wide, and this add-on has no
+  dependencies.
+
+- **External sign-in**: `auth.providers()`, `auth.start_oidc_login()` and
+  `auth.complete_oidc_login()`. The callback carries `providerSlug` and `redirectUri` as well
+  as the code and state, because the gateway requires all four - it scopes its one-time state
+  per provider and compares the redirect URI against the provider's configured value.
 ## [1.0.0] - 2026-08-20
 
 First release. Pure GDScript, no dependencies, Godot 4.3+ including non-.NET builds.

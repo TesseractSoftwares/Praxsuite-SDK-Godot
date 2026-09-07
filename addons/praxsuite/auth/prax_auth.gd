@@ -211,6 +211,104 @@ func get_config() -> Variant:
 	return PraxResult.unwrap_envelope(response)
 
 
+## The external identity providers this workspace has configured.
+##
+## Returns an Array of { slug, display_name }, or a PraxError.
+##
+## Read from oidcProviders in the public config. authPageConfig.enabledSocialProviders is a
+## different list, written by the portal's auth-page designer - a provider named there but absent
+## here is not configured, and its button is a dead end.
+func providers() -> Variant:
+	var config: Variant = await get_config()
+	if config is PraxError:
+		return config
+
+	var raw: Variant = config.get("oidcProviders")
+	if not (raw is Array):
+		return []
+
+	var found := []
+	for item in raw:
+		if item is String and not (item as String).is_empty():
+			found.append({"slug": item, "display_name": item})
+		elif item is Dictionary:
+			var slug := str((item as Dictionary).get("slug", ""))
+			if not slug.is_empty():
+				var label := str((item as Dictionary).get("displayName", ""))
+				found.append({
+					"slug": slug,
+					"display_name": label if not label.is_empty() else slug,
+				})
+	return found
+
+
+## Starts a sign-in with an external identity provider.
+##
+## Returns { authorization_url, state }, or a PraxError. Open the URL with OS.shell_open(); the
+## provider sends the player back to the redirect URI configured for it in the portal, carrying
+## code and state. Hand all of it to complete_oidc_login().
+##
+## Only the authorization-code flow exists - there is no route that accepts a provider's own
+## id_token - so even a native button has to make this browser hop.
+func start_oidc_login(provider_slug: String) -> Variant:
+	var slug := provider_slug.strip_edges()
+	if slug.is_empty():
+		return PraxError.new("INVALID_ARGUMENT", "provider_slug is required.")
+
+	var url := PraxRoutes.auth(_client.base_url, _client.workspace_id, "oidc/" + slug.uri_encode())
+	var response: Variant = await _client.http.request_json(
+		HTTPClient.METHOD_GET, url, _client.anonymous_headers(), null, true)
+	if response is PraxError:
+		return response
+
+	var payload: Dictionary = PraxResult.unwrap_envelope(response)
+	var authorization_url := str(payload.get("authorizationUrl", payload.get("url", "")))
+	if authorization_url.is_empty():
+		return PraxError.new("OIDC_NO_URL",
+			'The gateway returned no authorization URL for provider "%s". Check that it is '
+				% provider_slug + "configured and enabled for this workspace.")
+
+	return {
+		"authorization_url": authorization_url,
+		"state": str(payload.get("state", "")),
+	}
+
+
+## Exchanges the provider's code for a Praxsuite session.
+##
+## All four values are required by the gateway, and three of them are why this call fails when it
+## fails. provider_slug scopes the one-time state, so omitting it makes every callback look
+## expired. state is consumed once; reusing or skipping it is rejected. redirect_uri is compared
+## against the value configured for that provider and must match exactly - pass the URI you were
+## actually redirected to rather than rebuilding it, which is how it ends up differing by a
+## trailing slash and failing with a message about redirect URIs that nobody can act on.
+##
+## The session is stored exactly as a password login stores it, so refresh, sign-out and every
+## authenticated call behave identically afterwards.
+func complete_oidc_login(provider_slug: String, code: String, state: String,
+		redirect_uri: String) -> Variant:
+
+	if provider_slug.strip_edges().is_empty():
+		return PraxError.new("INVALID_ARGUMENT", "provider_slug is required.")
+	if code.strip_edges().is_empty():
+		return PraxError.new("INVALID_ARGUMENT", "code is required.")
+	if state.strip_edges().is_empty():
+		return PraxError.new("INVALID_ARGUMENT", "state is required.")
+	if redirect_uri.strip_edges().is_empty():
+		return PraxError.new("INVALID_ARGUMENT", "redirect_uri is required.")
+
+	var payload: Variant = await _post("oidc/callback", {
+		"providerSlug": provider_slug,
+		"code": code,
+		"state": state,
+		"redirectUri": redirect_uri,
+	})
+	if payload is PraxError:
+		return payload
+
+	return _adopt(PraxSession.from_payload(payload))
+
+
 func _post(action: String, body: Dictionary) -> Variant:
 	var url := PraxRoutes.auth(_client.base_url, _client.workspace_id, action)
 	# Auth calls carry the credential, never the session - signing in while already signed in
