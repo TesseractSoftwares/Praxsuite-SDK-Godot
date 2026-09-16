@@ -28,8 +28,17 @@ pool:
   name: tesseract-buildpool
 
 variables:
-  isMaster: $[eq(variables['Build.SourceBranch'], 'refs/heads/master')]
-  githubRepo: 'TesseractSoftwares/Praxsuite-SDK-Godot'
+  # Los secretos de publicacion salian de prax-cicd-kv, que vive en la
+  # suscripcion de Azure bloqueada el 2026-09-15. Las lecturas todavia
+  # funcionan, pero si esa suscripcion llega a eliminarse el pipeline se cae.
+  # Este grupo es NATIVO de ADO: no se le agrega gcloud a un pipeline que no lo
+  # necesita para nada mas. Los nombres de variable son identicos a los del
+  # vault, asi que las referencias $(...) de mas abajo no cambian.
+  - group: sdk-publish
+  - name: isMaster
+    value: $[eq(variables['Build.SourceBranch'], 'refs/heads/master')]
+  - name: githubRepo
+    value: 'TesseractSoftwares/Praxsuite-SDK-Godot'
   # No godotVersion here any more: the engine versions live in the Validate matrix, and the Publish
   # stage never needed an engine at all - packaging is a staged copy and a zip, because a pure
   # GDScript addon has nothing to compile.
@@ -133,14 +142,6 @@ stages:
         - checkout: self
           fetchDepth: 0
           persistCredentials: true
-
-        - task: AzureKeyVault@2
-          displayName: 'Read GitHub token'
-          inputs:
-            azureSubscription: 'sc-acr-push-core-prod'
-            KeyVaultName: 'prax-cicd-kv'
-            SecretsFilter: 'GITHUB-SDK-MIRROR-TOKEN,PRAXSPACE-INGEST-URL'
-            RunAsPreJob: false
 
         # plugin.cfg is the single source of truth for the version, so a release tag can never
         # disagree with what the editor shows the user.
