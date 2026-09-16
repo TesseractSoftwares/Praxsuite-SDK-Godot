@@ -28,8 +28,18 @@ pool:
   name: tesseract-buildpool
 
 variables:
-  isMaster: $[eq(variables['Build.SourceBranch'], 'refs/heads/master')]
-  githubRepo: 'TesseractSoftwares/Praxsuite-SDK-Godot'
+  # Los secretos de publicacion salian de prax-cicd-kv, que vive en la
+  # suscripcion de Azure bloqueada el 2026-09-15. Ahora vienen de Secret
+  # Manager de GCP, donde los 46 secretos de ese vault ya estaban replicados
+  # desde el 2026-09-09: una sola fuente de verdad, no dos copias que se
+  # desincronizan. El grupo gcp-migration aporta GCP_SA_KEY_B64.
+  - group: gcp-migration
+  - name: gcpProject
+    value: 'praxsuite-prod'
+  - name: isMaster
+    value: $[eq(variables['Build.SourceBranch'], 'refs/heads/master')]
+  - name: githubRepo
+    value: 'TesseractSoftwares/Praxsuite-SDK-Godot'
   # No godotVersion here any more: the engine versions live in the Validate matrix, and the Publish
   # stage never needed an engine at all - packaging is a staged copy and a zip, because a pure
   # GDScript addon has nothing to compile.
@@ -134,14 +144,6 @@ stages:
           fetchDepth: 0
           persistCredentials: true
 
-        - task: AzureKeyVault@2
-          displayName: 'Read GitHub token'
-          inputs:
-            azureSubscription: 'sc-acr-push-core-prod'
-            KeyVaultName: 'prax-cicd-kv'
-            SecretsFilter: 'GITHUB-SDK-MIRROR-TOKEN,PRAXSPACE-INGEST-URL'
-            RunAsPreJob: false
-
         # plugin.cfg is the single source of truth for the version, so a release tag can never
         # disagree with what the editor shows the user.
         - script: |
@@ -211,6 +213,12 @@ stages:
           inputs:
             PathtoPublish: '$(Build.ArtifactStagingDirectory)/package'
             ArtifactName: 'godot-addon'
+
+        - template: .azure/templates/gcp-secrets.yml
+          parameters:
+            secretos:
+              GITHUB-SDK-MIRROR-TOKEN: cicd-github-sdk-mirror-token
+              PRAXSPACE-INGEST-URL: cicd-praxspace-ingest-url
 
         - script: |
             set -e
